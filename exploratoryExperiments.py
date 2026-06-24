@@ -20,7 +20,7 @@ yPoints = []
 for i in range(int(bounds["T"][0]), int(bounds["T"][1])):
     xPoints.append(i)
 
-    result.append(client.run("bench", T=30.0, pH=6.5, F1=1, F2=1, F3=1))
+    result.append(client.run("bench", T=i, pH=6.5, F1=1, F2=1, F3=1))
 
     basic_client.time.sleep(0.5)
 
