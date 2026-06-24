@@ -2,6 +2,7 @@ import basic_client
 import os
 import matplotlib.pyplot as plt
 import csv
+import numpy as np
 
 #Creates client object that acts as the API 
 client = basic_client.BioreactorClient(basic_client.BASE_URL)
@@ -17,10 +18,10 @@ xPoints = []
 yPoints = []
 
 #Got through each bound and add the value to xPoints for plotting, and run experiment in the reactor
-for i in range(int(bounds["T"][0]), int(bounds["T"][1])):
+for i in np.linspace(bounds["F3"][0], bounds["F3"][1], 25):
     xPoints.append(i)
 
-    result.append(client.run("bench", T=i, pH=6.5, F1=1, F2=1, F3=1))
+    result.append(client.run("bench", T= 40, pH=6.5, F1=1, F2=1, F3=i))
 
     basic_client.time.sleep(0.5)
 
