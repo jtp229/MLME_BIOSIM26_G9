@@ -20,8 +20,11 @@ SCALE_MAPPING = {
 }
 
 SCALE_COSTS = {0: 10.0, 1: 500.0, 2: 2000.0}       # Micro, Bench, Pilot
-SCALE_NOISE = {0: 1.5**2, 1: 0.5**2, 2: 0.05**2}  # Variance (\sigma^2). Placeholder variables until Ian finishes analysis of noise.
-#scale similarity matrix
+SCALE_NOISE = {
+     0: 0.00033,  # Empirical Microplate noise
+     1: 0.00728,    # Empirical Benchtop noise
+     2: 0.00010    # Pilot noise assumption based on bench scale
+}  # Variance (\sigma^2). 
 B = np.array([
     [1.0, 0.5, 0.3],  # Microplate correlations
     [0.5, 1.0, 0.8],  # Benchtop correlations
