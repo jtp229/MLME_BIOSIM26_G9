@@ -23,8 +23,8 @@ probe_recipes = {
 # --- Replicate counts per scale ---
 reps = {
     "micro": 10,
-    "bench": 2,
-    "pilot": 1,
+    "bench": 5,
+    "pilot": 3,
 }
 
 rows = []
