@@ -11,10 +11,13 @@ client = basic_client.BioreactorClient(basic_client.BASE_URL)
 client.login(basic_client.USER, basic_client.PASSWORD)
  
 
-RECIPE_MIN = np.array([20.0,  3.0, 0.0, 0.0, 0.0])
-RECIPE_MAX = np.array([60.0,  9.5, 2.0, 2.0, 2.0])
+RECIPE_MIN = np.array([33.0,  7.0, 0.0, 0.0, 0.0])
+RECIPE_MAX = np.array([38.0,  9.5, 2.0, 2.0, 2.0])
  
 SCALE_MAPPING = {0: "micro", 1: "bench", 2: "pilot"}
+
+# Set to a float to seek a target yield; None = maximize Y.
+TARGET_PILOT_Y: float | None = None
  
 # Confirmed from CSV: micro=10, bench=500, pilot=2000
 SCALE_COSTS = {0: 10.0, 1: 500.0, 2: 2000.0}
@@ -86,6 +89,15 @@ def expected_improvement(mean: float, std: float, best_f: float) -> float:
  
  
 
+def expected_target_utility(mean: float, std: float, target: float) -> float:
+    """
+    Utility for *hitting a target* rather than maximizing Y.
+    We maximize negative expected squared error:
+        U = -E[(Y-target)^2] = -((mean-target)^2 + std^2)
+    """
+    return -(((mean - target) ** 2) + (std ** 2))
+
+
 def select_next_experiment(
     gp_model: GaussianProcessRegressor,
     X_train: np.ndarray,
@@ -102,10 +114,10 @@ def select_next_experiment(
     genuinely distinguish what it expects from a micro vs bench vs pilot run.
     """
     pilot_mask = X_train[:, 5] == 2
-    if np.any(pilot_mask):
-        best_f = float(np.max(Y_train[pilot_mask]))
-    else:
+    if TARGET_PILOT_Y is None:
         best_f = float(np.max(Y_train))
+    else:
+        best_f = float("nan")
  
     best_utility = -np.inf
     best_recipe  = None
@@ -125,8 +137,11 @@ def select_next_experiment(
         # ─────────────────────────────────────────────────────────────────
  
         for recipe, mean, std in zip(random_recipes, means, stds):
-            ei      = expected_improvement(float(mean), float(std), best_f)
-            utility = ei / SCALE_COSTS[scale_idx]
+            if TARGET_PILOT_Y is None:
+                acq = expected_improvement(float(mean), float(std), best_f)
+            else:
+                acq = expected_target_utility(float(mean), float(std), TARGET_PILOT_Y)
+            utility = acq / SCALE_COSTS[scale_idx]
  
             if utility > best_utility:
                 best_utility = utility
@@ -158,10 +173,10 @@ def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float]:
 
 
 
-MOCK_MODE = True   # flip to False for real runs
+MOCK_MODE = False   # flip to False for real runs
 
 def experiment_mock(recipe: np.ndarray, scale: int) -> tuple[float, float]:
-    HOTSPOT = np.array([35.5, 6.5, 1.0, 1.0, 1.0])
+    HOTSPOT = np.array([35.2, 8.05, 1.85, 1.03, 1.8])
     dist    = np.linalg.norm(recipe - HOTSPOT)
     base = {0: 0.14, 1: 3.52, 2: 1.44}
     peak = {0: 0.18, 1: 5.42, 2: 2.36}
@@ -209,11 +224,17 @@ if __name__ == "__main__":
         ([35.5, 6.5, 1.0, 1.0, 1.0],               0,   0.20264),
         ([35.5, 6.5, 1.0, 1.0, 1.0],               1,   5.33658),  # bench
         ([35.5, 6.5, 1.0, 1.0, 1.0],               1,   5.50103),  # bench
-        ([35.5, 6.5, 1.0, 1.0, 1.0],               2,   2.35823),  # pilot ← most valuable
+        ([35.5, 6.5, 1.0, 1.0, 1.0],               2,   2.35823),  # pilot
+        # High-yield region discovered in prior BO campaigns (pH ~8, T ~35)
+        ([35.595, 7.911, 1.922, 0.109, 1.651],     2,  21.18010),
+        ([35.703, 7.997, 1.918, 0.941, 1.951],     2,  18.34820),
+        ([35.684, 8.349, 1.848, 1.249, 1.833],     2,  14.48520),
+        ([35.769, 8.098, 1.912, 0.639, 1.970],     1,  31.99850),
+        ([35.979, 8.284, 1.841, 0.284, 1.305],     1,  30.29950),
+        ([34.535, 8.071, 1.859, 0.759, 0.215],     2,   7.22931),
     ]
     # ─────────────────────────────────────────────────────────────────────
- 
- 
+
     history: list[dict] = []
  
     X_list, Y_list = [], []
@@ -281,7 +302,15 @@ if __name__ == "__main__":
         Y_train = np.append(Y_train, y)
  
         pilot_mask = X_train[:, 5] == 2
-        best_pilot = float(np.max(Y_train[pilot_mask])) if np.any(pilot_mask) else 0.0
+        best_overall = float(np.max(Y_train))
+        if np.any(pilot_mask):
+            if TARGET_PILOT_Y is None:
+                best_pilot = float(np.max(Y_train[pilot_mask]))
+            else:
+                pilot_vals = Y_train[pilot_mask]
+                best_pilot = float(pilot_vals[np.argmin(np.abs(pilot_vals - TARGET_PILOT_Y))])
+        else:
+            best_pilot = 0.0
  
 
         history.append({
@@ -299,7 +328,7 @@ if __name__ == "__main__":
  
         print(
             f"  -> Y={y:.4f}  cost={cost:.0f}€  "
-            f"total={total_spent:.0f}€  best_pilot={best_pilot:.4f}",
+            f"total={total_spent:.0f}€  best={best_overall:.4f}  best_pilot={best_pilot:.4f}",
             flush=True,
         )
  
@@ -315,12 +344,27 @@ if __name__ == "__main__":
  
     # ── Final summary ─────────────────────────────────────────────────────
     pilot_mask = X_train[:, 5] == 2
-    max_pilot_Y = float(np.max(Y_train[pilot_mask])) if np.any(pilot_mask) else 0.0
+    best_overall_Y = float(np.max(Y_train))
+    if np.any(pilot_mask):
+        if TARGET_PILOT_Y is None:
+            best_pilot_Y = float(np.max(Y_train[pilot_mask]))
+        else:
+            pilot_vals = Y_train[pilot_mask]
+            best_pilot_Y = float(pilot_vals[np.argmin(np.abs(pilot_vals - TARGET_PILOT_Y))])
+    else:
+        best_pilot_Y = 0.0
     n_by_scale  = {SCALE_MAPPING[s]: int(np.sum(X_train[:, 5] == s)) for s in [0, 1, 2]}
- 
+
     print("\n" + "=" * 55)
     print(f"Campaign complete — results saved to {csv_filename}")
     print(f"Runs by scale:   {n_by_scale}")
     print(f"Total cost:      {total_spent:.0f} EUR")
-    print(f"Best pilot Y:    {max_pilot_Y:.4f} g/L   (Felix baseline: 14.0)")
+    if TARGET_PILOT_Y is None:
+        print(f"Best overall Y:  {best_overall_Y:.4f} g/L")
+        print(f"Best pilot Y:    {best_pilot_Y:.4f} g/L")
+    else:
+        print(
+            f"Best pilot Y:    {best_pilot_Y:.4f} g/L   "
+            f"(target: {TARGET_PILOT_Y:.1f}, abs err: {abs(best_pilot_Y - TARGET_PILOT_Y):.4f})"
+        )
     print("=" * 55)
