@@ -283,8 +283,12 @@ if __name__ == "__main__":
     NUM_CAMPAIGNS = 10 
     
     summary_data = []
+    
+     # Generate all seeds up front so the inner campaigns don't mess with this sequence
+    master_rng = np.random.default_rng(42) # Set a master seed for reproducibility
+    campaign_seeds = master_rng.integers(1, 1000000, size=NUM_CAMPAIGNS)
 
-    for idx in range(1, NUM_CAMPAIGNS + 1):
+    for idx, current_seed in enumerate(campaign_seeds, 1):
         # Generate a random integer seed for this specific campaign run
         current_seed = int(np.random.randint(1, 1000000))
         
