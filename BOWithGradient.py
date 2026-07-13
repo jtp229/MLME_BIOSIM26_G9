@@ -4,6 +4,7 @@ from scipy.stats import norm, qmc
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF
 import time
+from scipy.optimize import minimize
 
 import basic_client
 
@@ -71,9 +72,10 @@ def select_next_experiment(
     gp_model: GaussianProcessRegressor,
     X_train: np.ndarray,
     Y_train: np.ndarray,
-    n_candidates: int = 100000,
+    n_candidates: int = 1000,
 ) -> tuple[np.ndarray, int]:
     
+    # 1. Determine best observed value (Restored your original fallback logic)
     pilot_mask = X_train[:, 5] == 2
     if TARGET_PILOT_Y is None:
         if np.any(pilot_mask):
@@ -86,47 +88,49 @@ def select_next_experiment(
     else:
         best_pilot_f = float("nan")
 
+    # 2. Find the best starting point via random sampling
     random_recipes_scaled = np.random.uniform(0.0, 1.0, size=(n_candidates, 5))
-
-    X_cand_pilot = np.column_stack([
-        random_recipes_scaled,
-        np.full(n_candidates, 2, dtype=float),
-    ])
-    
+    X_cand_pilot = np.column_stack([random_recipes_scaled, np.full(n_candidates, 2.0)])
     means, stds = gp_model.predict(X_cand_pilot, return_std=True)
-
-    best_acq = -np.inf
-    best_recipe_scaled = None
-
-    for recipe_scaled, mean, std in zip(random_recipes_scaled, means, stds):
-        if TARGET_PILOT_Y is None:
-            acq = expected_improvement(float(mean), float(std), best_pilot_f, xi=0.05)
-        else:
-            acq = expected_target_utility(float(mean), float(std), TARGET_PILOT_Y)
-            
-        if acq > best_acq:
-            best_acq = acq
-            best_recipe_scaled = recipe_scaled.copy()
-
-    X_eval_scales = np.array([
-        np.append(best_recipe_scaled, 0),
-        np.append(best_recipe_scaled, 1),
-        np.append(best_recipe_scaled, 2)
-    ])
     
-    _, stds_at_scales = gp_model.predict(X_eval_scales, return_std=True)
-    pilot_std = float(stds_at_scales[2])
-    
-    # Guided scale selection based on informational limits of the B matrix
-    if pilot_std > 0.98:
-        # Region is completely blind; gather cheap low-fidelity info if available
-        best_scale = 0
-    elif pilot_std > 0.44:
-        # High uncertainty at target scale: use highly cost-effective Bench scale (correlation 0.90)
-        best_scale = 1
+    if TARGET_PILOT_Y is None:
+        acqs = [expected_improvement(m, s, best_pilot_f, xi=0.01) for m, s in zip(means, stds)]
     else:
-        # Uncertainty is low; Bench scale has hit its informational limit. Commit to Pilot scale.
-        best_scale = 2
+        acqs = [expected_target_utility(m, s, TARGET_PILOT_Y) for m, s in zip(means, stds)]
+    
+    best_idx = np.argmax(acqs)
+    start_recipe = random_recipes_scaled[best_idx]
+
+    # 3. Local Refinement using L-BFGS-B
+    def neg_acq(x_scaled):
+        x_full = np.column_stack([x_scaled.reshape(1, -1), [[2.0]]])
+        m, s = gp_model.predict(x_full, return_std=True)
+        
+        # FIXED: Safely extract scalar to prevent NumPy deprecation warnings
+        m_val = m.item()
+        s_val = s.item()
+        
+        if TARGET_PILOT_Y is None:
+            return -expected_improvement(m_val, s_val, best_pilot_f, xi=0.01)
+        return -expected_target_utility(m_val, s_val, TARGET_PILOT_Y)
+
+    # Run the gradient descent on the surrogate model
+    res = minimize(
+        neg_acq, 
+        x0=start_recipe, 
+        method='L-BFGS-B', 
+        bounds=[(0, 1)] * 5
+    )
+    best_recipe_scaled = res.x
+
+    # 4. Scale selection 
+    X_eval_scales = np.array([np.append(best_recipe_scaled, s) for s in [0, 1, 2]])
+    _, stds_at_scales = gp_model.predict(X_eval_scales, return_std=True)
+    
+    pilot_std = float(stds_at_scales[2])
+    if pilot_std > 0.97: best_scale = 0
+    elif pilot_std > 0.44: best_scale = 1
+    else: best_scale = 2
 
     best_recipe = best_recipe_scaled * (RECIPE_MAX - RECIPE_MIN) + RECIPE_MIN
     return best_recipe, best_scale
@@ -141,15 +145,15 @@ def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float]:
     resp = client.run(SCALE_MAPPING[scale], **recipe_dict)
     y    = float(resp["Y"])
     cost = SCALE_COSTS[scale]
-    basic_client.time.sleep(0.5)
+    basic_client.time.sleep(1.0)
     return y, cost
 
 
 MOCK_MODE = False
 if __name__ == "__main__":
-    BUDGET_LIMIT = 14000.0
+    BUDGET_LIMIT = 15000.0
     PILOT_RESERVE = 2000.0     
-    N_INITIAL_SAMPLES = 300     
+    N_INITIAL_SAMPLES = 100     
     INITIAL_SCALE = 0          
     
     history: list[dict] = []
@@ -201,7 +205,7 @@ if __name__ == "__main__":
             X_train_scaled = transform_X(X_train)
             gp.fit(X_train_scaled, Y_train)
             
-            exploitation_candidates = 100000
+            exploitation_candidates = 5000
             random_recipes_scaled = np.random.uniform(0.0, 1.0, size=(exploitation_candidates, 5))
             X_cand_pilot = np.column_stack([
                 random_recipes_scaled,

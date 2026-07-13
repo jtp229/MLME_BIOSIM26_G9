@@ -3,6 +3,7 @@ import numpy as np
 from scipy.stats import norm, qmc
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF
+from scipy.optimize import minimize
 import time
 
 import basic_client
@@ -18,9 +19,9 @@ TARGET_PILOT_Y: float | None = None
 
 SCALE_COSTS = {0: 10.0, 1: 500.0, 2: 2000.0}
 SCALE_NOISE = {
-    0: 0.000365,   # micro (calculated from 50 runs)
-    1: 0.003797,   # bench (calculated from 50 runs)
-    2: 0.000024,   # pilot (calculated from 50 runs)
+    0: 0.000365,   # micro 
+    1: 0.003797,   # bench 
+    2: 0.000024,   # pilot 
 }
 
 B = np.array([
@@ -39,7 +40,6 @@ class MultiFidelityKernel(RBF):
         else:
             rbf_matrix = super().__call__(X_recipe, Y_recipe, eval_gradient=False)
 
-        # High-performance vectorization replacing the nested loops
         X_scale = X[:, 5].astype(int)
         Y_scale = Y[:, 5].astype(int) if Y is not None else X_scale
         b_matrix = B[X_scale[:, np.newaxis], Y_scale]
@@ -71,7 +71,7 @@ def select_next_experiment(
     gp_model: GaussianProcessRegressor,
     X_train: np.ndarray,
     Y_train: np.ndarray,
-    n_candidates: int = 100000,
+    n_candidates: int = 1000,
 ) -> tuple[np.ndarray, int]:
     
     pilot_mask = X_train[:, 5] == 2
@@ -87,46 +87,41 @@ def select_next_experiment(
         best_pilot_f = float("nan")
 
     random_recipes_scaled = np.random.uniform(0.0, 1.0, size=(n_candidates, 5))
-
-    X_cand_pilot = np.column_stack([
-        random_recipes_scaled,
-        np.full(n_candidates, 2, dtype=float),
-    ])
-    
+    X_cand_pilot = np.column_stack([random_recipes_scaled, np.full(n_candidates, 2.0)])
     means, stds = gp_model.predict(X_cand_pilot, return_std=True)
-
-    best_acq = -np.inf
-    best_recipe_scaled = None
-
-    for recipe_scaled, mean, std in zip(random_recipes_scaled, means, stds):
-        if TARGET_PILOT_Y is None:
-            acq = expected_improvement(float(mean), float(std), best_pilot_f, xi=0.05)
-        else:
-            acq = expected_target_utility(float(mean), float(std), TARGET_PILOT_Y)
-            
-        if acq > best_acq:
-            best_acq = acq
-            best_recipe_scaled = recipe_scaled.copy()
-
-    X_eval_scales = np.array([
-        np.append(best_recipe_scaled, 0),
-        np.append(best_recipe_scaled, 1),
-        np.append(best_recipe_scaled, 2)
-    ])
     
-    _, stds_at_scales = gp_model.predict(X_eval_scales, return_std=True)
-    pilot_std = float(stds_at_scales[2])
-    
-    # Guided scale selection based on informational limits of the B matrix
-    if pilot_std > 0.98:
-        # Region is completely blind; gather cheap low-fidelity info if available
-        best_scale = 0
-    elif pilot_std > 0.44:
-        # High uncertainty at target scale: use highly cost-effective Bench scale (correlation 0.90)
-        best_scale = 1
+    if TARGET_PILOT_Y is None:
+        acqs = [expected_improvement(m, s, best_pilot_f, xi=0.01) for m, s in zip(means, stds)]
     else:
-        # Uncertainty is low; Bench scale has hit its informational limit. Commit to Pilot scale.
-        best_scale = 2
+        acqs = [expected_target_utility(m, s, TARGET_PILOT_Y) for m, s in zip(means, stds)]
+    
+    best_idx = np.argmax(acqs)
+    start_recipe = random_recipes_scaled[best_idx]
+
+    def neg_acq(x_scaled):
+        x_full = np.column_stack([x_scaled.reshape(1, -1), [[2.0]]])
+        m, s = gp_model.predict(x_full, return_std=True)
+        m_val = m.item()
+        s_val = s.item()
+        if TARGET_PILOT_Y is None:
+            return -expected_improvement(m_val, s_val, best_pilot_f, xi=0.01)
+        return -expected_target_utility(m_val, s_val, TARGET_PILOT_Y)
+
+    res = minimize(
+        neg_acq, 
+        x0=start_recipe, 
+        method='L-BFGS-B', 
+        bounds=[(0, 1)] * 5
+    )
+    best_recipe_scaled = res.x
+
+    X_eval_scales = np.array([np.append(best_recipe_scaled, s) for s in [0, 1, 2]])
+    _, stds_at_scales = gp_model.predict(X_eval_scales, return_std=True)
+    
+    pilot_std = float(stds_at_scales[2])
+    if pilot_std > 0.98: best_scale = 0
+    elif pilot_std > 0.44: best_scale = 1
+    else: best_scale = 2
 
     best_recipe = best_recipe_scaled * (RECIPE_MAX - RECIPE_MIN) + RECIPE_MIN
     return best_recipe, best_scale
@@ -145,19 +140,24 @@ def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float]:
     return y, cost
 
 
-MOCK_MODE = False
-if __name__ == "__main__":
+def run_campaign(campaign_id: int, seed: int) -> tuple[float, float, float]:
+    """Runs a single full BO campaign and returns best overall, best pilot, and average pilot Y."""
+    # Set the random seed for NumPy for this specific campaign
+    np.random.seed(seed)
+    
     BUDGET_LIMIT = 14000.0
     PILOT_RESERVE = 2000.0     
-    N_INITIAL_SAMPLES = 300     
+    N_INITIAL_SAMPLES = 200     
     INITIAL_SCALE = 0          
     
     history: list[dict] = []
     X_list, Y_list = [], []
     total_spent = 0.0
     
-    print(f"--- Generating {N_INITIAL_SAMPLES} initial points using Latin Hypercube Sampling ---")
-    sampler = qmc.LatinHypercube(d=5)
+    print(f"\n--- Generating {N_INITIAL_SAMPLES} initial points using Latin Hypercube Sampling (Seed: {seed}) ---")
+    
+    # Pass the seed to the QMC Sampler to guarantee reproducible starting points
+    sampler = qmc.LatinHypercube(d=5, seed=seed)
     lhs_sample = sampler.random(n=N_INITIAL_SAMPLES)
     initial_recipes = qmc.scale(lhs_sample, RECIPE_MIN, RECIPE_MAX)
     
@@ -179,7 +179,6 @@ if __name__ == "__main__":
     X_train = np.array(X_list)
     Y_train = np.array(Y_list)
 
-    # Stabilized length_scale lower bound to prevent micro-spires
     mf_kernel  = MultiFidelityKernel(length_scale=0.2, length_scale_bounds=(0.15, 1.5))
     gp = GaussianProcessRegressor(
         kernel=mf_kernel,
@@ -201,7 +200,7 @@ if __name__ == "__main__":
             X_train_scaled = transform_X(X_train)
             gp.fit(X_train_scaled, Y_train)
             
-            exploitation_candidates = 100000
+            exploitation_candidates = 5000
             random_recipes_scaled = np.random.uniform(0.0, 1.0, size=(exploitation_candidates, 5))
             X_cand_pilot = np.column_stack([
                 random_recipes_scaled,
@@ -246,16 +245,73 @@ if __name__ == "__main__":
 
         print(f"  -> Y={y:.4f}  cost={cost:.0f}€  total={total_spent:.0f}€  best={best_overall:.4f}  best_pilot={best_pilot:.4f}", flush=True)
 
-    csv_filename = "bo_campaign_history.csv"
+    # Save individual run history
+    csv_filename = f"bo_campaign_history_run_{campaign_id}.csv"
     fieldnames   = ["T", "pH", "F1", "F2", "F3", "scale", "observed_Y", "cost_eur", "cumulative_cost", "source"]
     with open(csv_filename, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(history)   
 
+    # Final calculations for the return summary
+    pilot_mask_final = X_train[:, 5] == 2
+    final_best_overall = float(np.max(Y_train))
+    
+    if np.any(pilot_mask_final):
+        pilot_y_values = Y_train[pilot_mask_final]
+        final_best_pilot = float(np.max(pilot_y_values))
+        final_avg_pilot = float(np.mean(pilot_y_values))
+    else:
+        final_best_pilot = 0.0
+        final_avg_pilot = 0.0
+
     print("\n" + "=" * 55)
-    print(f"Campaign complete — results saved to {csv_filename}")
+    print(f"Campaign {campaign_id} complete — results saved to {csv_filename}")
+    print(f"Campaign Seed:   {seed}")
     print(f"Total cost:      {total_spent:.0f} EUR")
-    print(f"Best overall Y:  {float(np.max(Y_train)):.4f} g/L")
-    print(f"Best pilot Y:    {float(np.max(Y_train[X_train[:, 5] == 2])) if np.any(X_train[:, 5] == 2) else 0.0:.4f} g/L")
+    print(f"Best overall Y:  {final_best_overall:.4f} g/L")
+    print(f"Best pilot Y:    {final_best_pilot:.4f} g/L")
+    print(f"Average pilot Y: {final_avg_pilot:.4f} g/L")
     print("=" * 55)
+    
+    return final_best_overall, final_best_pilot, final_avg_pilot
+
+
+MOCK_MODE = False
+if __name__ == "__main__":
+    # SET DESIRED NUMBER OF RUNS HERE
+    NUM_CAMPAIGNS = 10 
+    
+    summary_data = []
+
+    for idx in range(1, NUM_CAMPAIGNS + 1):
+        # Generate a random integer seed for this specific campaign run
+        current_seed = int(np.random.randint(1, 1000000))
+        
+        print(f"\n\n{'#' * 60}")
+        print(f"### STARTING CAMPAIGN {idx} OF {NUM_CAMPAIGNS} (Seed: {current_seed})")
+        print(f"{'#' * 60}")
+        
+        b_overall, b_pilot, avg_pilot = run_campaign(idx, seed=current_seed)
+        
+        summary_data.append({
+            "campaign_id": idx,
+            "seed": current_seed,
+            "highest_found_Y": b_overall,
+            "highest_found_pilot_Y": b_pilot,
+            "average_pilot_Y": avg_pilot
+        })
+        
+        # Brief pause between campaigns to prevent API overload
+        time.sleep(2)
+
+    # Save summary results
+    summary_filename = "bo_multiple_campaigns_summary.csv"
+    summary_fieldnames = ["campaign_id", "seed", "highest_found_Y", "highest_found_pilot_Y", "average_pilot_Y"]
+    
+    with open(summary_filename, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=summary_fieldnames)
+        writer.writeheader()
+        writer.writerows(summary_data)
+
+    print(f"\nAll {NUM_CAMPAIGNS} campaigns finished! Summary saved to: {summary_filename}")
