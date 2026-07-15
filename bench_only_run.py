@@ -75,7 +75,7 @@ def select_next_experiment(
     n_candidates: int = 1000,
 ) -> tuple[np.ndarray, int]:
     
-    # 1. Determine best observed value (Restored your original fallback logic)
+    # 1. Determine best observed value
     pilot_mask = X_train[:, 5] == 2
     if TARGET_PILOT_Y is None:
         if np.any(pilot_mask):
@@ -106,7 +106,6 @@ def select_next_experiment(
         x_full = np.column_stack([x_scaled.reshape(1, -1), [[2.0]]])
         m, s = gp_model.predict(x_full, return_std=True)
         
-        # FIXED: Safely extract scalar to prevent NumPy deprecation warnings
         m_val = m.item()
         s_val = s.item()
         
@@ -136,7 +135,7 @@ def select_next_experiment(
     return best_recipe, best_scale
 
 
-def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float]:
+def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float, int]:
     # --- ONLY BENCH INTERCEPT ---
     # If it's the LHS phase (history is short), let it use Micro (0).
     # Once the BO loop starts, force everything to Bench (1) until the final Pilot pass.
@@ -153,7 +152,7 @@ def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float]:
     y    = float(resp["Y"])
     cost = SCALE_COSTS[scale]
     basic_client.time.sleep(1.0)
-    return y, cost
+    return y, cost, scale
 
 
 MOCK_MODE = False
@@ -177,14 +176,14 @@ if __name__ == "__main__":
             print("Budget exceeded during LHS initialization.")
             break
             
-        y, cost = experiment(recipe, INITIAL_SCALE)
+        y, cost, executed_scale = experiment(recipe, INITIAL_SCALE)
         total_spent += cost
-        X_list.append(np.append(recipe, INITIAL_SCALE))
+        X_list.append(np.append(recipe, executed_scale))
         Y_list.append(y)
         
         history.append({
             "T": float(recipe[0]), "pH": float(recipe[1]), "F1": float(recipe[2]), "F2": float(recipe[3]), "F3": float(recipe[4]),
-            "scale": INITIAL_SCALE, "observed_Y": y, "cost_eur": cost, "cumulative_cost": total_spent, "source": "lhs_seed",
+            "scale": executed_scale, "observed_Y": y, "cost_eur": cost, "cumulative_cost": total_spent, "source": "lhs_seed",
         })
 
     X_train = np.array(X_list)
@@ -240,7 +239,8 @@ if __name__ == "__main__":
                 next_scale = max(affordable)
                 print(f"  [scale downgraded to {SCALE_MAPPING[next_scale]} — preserving pilot budget reserve]")
 
-        y, cost = experiment(next_recipe, next_scale)
+        # Capturing returned scale directly to resolve variable scoping mismatch
+        y, cost, next_scale = experiment(next_recipe, next_scale)
         total_spent += cost
 
         X_train = np.vstack([X_train, np.append(next_recipe, next_scale)])
