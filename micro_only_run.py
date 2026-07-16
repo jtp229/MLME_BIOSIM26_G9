@@ -19,9 +19,9 @@ TARGET_PILOT_Y: float | None = None
 
 SCALE_COSTS = {0: 10.0, 1: 500.0, 2: 2000.0}
 SCALE_NOISE = {
-    0: 0.000365,   # micro (calculated from 50 runs)
-    1: 0.003797,   # bench (calculated from 50 runs)
-    2: 0.000024,   # pilot (calculated from 50 runs)
+    0: 0.000365,   # micro 
+    1: 0.003797,   # bench 
+    2: 0.000024,   # pilot 
 }
 
 B = np.array([
@@ -40,7 +40,7 @@ class MultiFidelityKernel(RBF):
         else:
             rbf_matrix = super().__call__(X_recipe, Y_recipe, eval_gradient=False)
 
-        # High-performance vectorization replacing the nested loops
+        #vectorization 
         X_scale = X[:, 5].astype(int)
         Y_scale = Y[:, 5].astype(int) if Y is not None else X_scale
         b_matrix = B[X_scale[:, np.newaxis], Y_scale]
@@ -75,7 +75,7 @@ def select_next_experiment(
     n_candidates: int = 1000,
 ) -> tuple[np.ndarray, int]:
     
-    # 1. Determine best observed value (Restored your original fallback logic)
+    # 1. Determine best observed value 
     pilot_mask = X_train[:, 5] == 2
     if TARGET_PILOT_Y is None:
         if np.any(pilot_mask):
@@ -106,7 +106,7 @@ def select_next_experiment(
         x_full = np.column_stack([x_scaled.reshape(1, -1), [[2.0]]])
         m, s = gp_model.predict(x_full, return_std=True)
         
-        # FIXED: Safely extract scalar to prevent NumPy deprecation warnings
+        # Safely extract scalar to prevent NumPy deprecation warnings
         m_val = m.item()
         s_val = s.item()
         
@@ -140,10 +140,9 @@ def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float]:
     # --- ONLY MICRO INTERCEPT ---
     # If the BO loop tries to scale up to Bench (1) or Pilot (2) before the 
     # pilot reserve threshold is hit, force it back down to Micro (0).
-    # The final reserve block naturally bypasses this by forcing scale=2 when remaining <= 2000.
+    # The final reserve block bypasses this by forcing scale=2 when remaining <= 2000.
     if total_spent < (BUDGET_LIMIT - PILOT_RESERVE):
         scale = 0
-    # ----------------------------
     
     r = np.clip(recipe, RECIPE_MIN, RECIPE_MAX)
     recipe_dict = {

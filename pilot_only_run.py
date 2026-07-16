@@ -19,9 +19,9 @@ TARGET_PILOT_Y: float | None = None
 
 SCALE_COSTS = {0: 0.0, 1: 500.0, 2: 2000.0}
 SCALE_NOISE = {
-    0: 0.000365,   # micro (calculated from 50 runs)
-    1: 0.003797,   # bench (calculated from 50 runs)
-    2: 0.000024,   # pilot (calculated from 50 runs)
+    0: 0.000365,   # micro 
+    1: 0.003797,   # bench 
+    2: 0.000024,   # pilot 
 }
 
 B = np.array([
@@ -40,7 +40,7 @@ class MultiFidelityKernel(RBF):
         else:
             rbf_matrix = super().__call__(X_recipe, Y_recipe, eval_gradient=False)
 
-        # High-performance vectorization replacing the nested loops
+        # vectorization 
         X_scale = X[:, 5].astype(int)
         Y_scale = Y[:, 5].astype(int) if Y is not None else X_scale
         b_matrix = B[X_scale[:, np.newaxis], Y_scale]
@@ -75,7 +75,7 @@ def select_next_experiment(
     n_candidates: int = 1000,
 ) -> tuple[np.ndarray, int]:
     
-    # 1. Determine best observed value (Restored your original fallback logic)
+    # 1. Determine best observed value 
     pilot_mask = X_train[:, 5] == 2
     if TARGET_PILOT_Y is None:
         if np.any(pilot_mask):
@@ -106,7 +106,7 @@ def select_next_experiment(
         x_full = np.column_stack([x_scaled.reshape(1, -1), [[2.0]]])
         m, s = gp_model.predict(x_full, return_std=True)
         
-        # FIXED: Safely extract scalar to prevent NumPy deprecation warnings
+        # Safely extract scalar to prevent NumPy deprecation warnings
         m_val = m.item()
         s_val = s.item()
         
@@ -137,8 +137,8 @@ def select_next_experiment(
 
 
 def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float]:
-    # --- THE HACK ---
-    # If the LHS loop sends scale 0 (Micro), let it run normally.
+    # --- ONLY PILOT INTERCEPT ---
+    # LHS loop runs scale 0 (Micro) as normal.
     # But if the BO loop passes anything else, intercept it and FORCE it to Pilot (2).
     if scale != 0:
         scale = 2

@@ -19,9 +19,9 @@ TARGET_PILOT_Y: float | None = None
 
 SCALE_COSTS = {0: 10.0, 1: 500.0, 2: 2000.0}
 SCALE_NOISE = {
-    0: 0.000365,   # micro (calculated from 50 runs)
-    1: 0.003797,   # bench (calculated from 50 runs)
-    2: 0.000024,   # pilot (calculated from 50 runs)
+    0: 0.000365,   # micro 
+    1: 0.003797,   # bench 
+    2: 0.000024,   # pilot 
 }
 
 B = np.array([
@@ -40,7 +40,7 @@ class MultiFidelityKernel(RBF):
         else:
             rbf_matrix = super().__call__(X_recipe, Y_recipe, eval_gradient=False)
 
-        # High-performance vectorization replacing the nested loops
+        # vectorization 
         X_scale = X[:, 5].astype(int)
         Y_scale = Y[:, 5].astype(int) if Y is not None else X_scale
         b_matrix = B[X_scale[:, np.newaxis], Y_scale]
@@ -137,12 +137,10 @@ def select_next_experiment(
 
 def experiment(recipe: np.ndarray, scale: int) -> tuple[float, float, int]:
     # --- ONLY BENCH INTERCEPT ---
-    # If it's the LHS phase (history is short), let it use Micro (0).
+    # If it's the LHS phase it uses Micro (0).
     # Once the BO loop starts, force everything to Bench (1) until the final Pilot pass.
     if len(history) >= 100 and total_spent < (BUDGET_LIMIT - PILOT_RESERVE):
         scale = 1
-    # ----------------------------
-    
     r = np.clip(recipe, RECIPE_MIN, RECIPE_MAX)
     recipe_dict = {
         "T":  float(r[0]), "pH": float(r[1]), "F1": float(r[2]), "F2": float(r[3]), "F3": float(r[4]),
@@ -239,7 +237,6 @@ if __name__ == "__main__":
                 next_scale = max(affordable)
                 print(f"  [scale downgraded to {SCALE_MAPPING[next_scale]} — preserving pilot budget reserve]")
 
-        # Capturing returned scale directly to resolve variable scoping mismatch
         y, cost, next_scale = experiment(next_recipe, next_scale)
         total_spent += cost
 

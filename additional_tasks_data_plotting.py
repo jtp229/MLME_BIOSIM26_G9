@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Load your CSV files (make sure these filenames match your actual files)
+# Load CSV files
 df_micro = pd.read_csv("bo_only_micro.csv")
 df_bench = pd.read_csv("bo_only_bench.csv")
 df_pilot = pd.read_csv("bo_only_pilot.csv") 
@@ -15,9 +15,9 @@ plt.figure(figsize=(10, 6), dpi=300)
 def process_run_data(df):
     costs = df['cost_eur'].values
     yields = df['observed_Y'].values
-    scales = df['scale'].values  # 0: micro, 1: bench, 2: pilot
+    scales = df['scale'].values  
     
-    # We start at cumulative budget 0 with 0 yield to anchor the step plots cleanly
+    # Start at cumulative budget 0 with 0 yield to anchor the step plots cleanly
     cumulative_budget = np.insert(np.cumsum(costs), 0, 0.0)
     
     # Track overall best yield (including micro and bench)
@@ -43,6 +43,7 @@ def process_run_data(df):
 budget_m, overall_m, pilot_m = process_run_data(df_micro)
 plt.plot(budget_m, overall_m, color='#1f77b4', linestyle='-', linewidth=2.5, 
          drawstyle='steps-post', label='Only Micro (Best Overall Yield)')
+
 # Marker and vertical drop-off at the final validated step
 plt.scatter(budget_m[-1], pilot_m[-1], color='#1f77b4', marker='o', s=100, zorder=5)
 plt.vlines(budget_m[-1], ymin=pilot_m[-1], ymax=overall_m[-1], color='#1f77b4', 
@@ -52,19 +53,20 @@ plt.vlines(budget_m[-1], ymin=pilot_m[-1], ymax=overall_m[-1], color='#1f77b4',
 budget_b, overall_b, pilot_b = process_run_data(df_bench)
 plt.plot(budget_b, overall_b, color='#ff7f0e', linestyle='-', linewidth=2.5, 
          drawstyle='steps-post', label='Only Bench (Best Overall Yield)')
+
 # Marker and vertical drop-off at the final validated step
 plt.scatter(budget_b[-1], pilot_b[-1], color='#ff7f0e', marker='s', s=100, zorder=5)
 plt.vlines(budget_b[-1], ymin=pilot_b[-1], ymax=overall_b[-1], color='#ff7f0e', 
            linestyle='--', alpha=0.7)
 
-# 3. Multi-fidelity Pilot Run (Baseline - Green)
+# 3. Pilot Run (Baseline - Green)
 # Overall best and best pilot are identical here because we only evaluate Pilot scale
 budget_p, overall_p, pilot_p = process_run_data(df_pilot)
 plt.plot(budget_p, pilot_p, color='#2ca02c', linestyle='-', linewidth=2.5, 
          drawstyle='steps-post', label='Only Pilot (Active Multi-Fidelity Best)')
 
 # ---------------------------------------------------------
-# Formatting the Graph
+# Formatting
 # ---------------------------------------------------------
 # Custom legend entries to clarify the solid vs. dashed lines
 plt.plot([], [], color='gray', linestyle='-', label='Surrogate Optimization Progress (Any Scale)')
